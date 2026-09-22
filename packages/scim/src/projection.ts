@@ -457,7 +457,9 @@ async function reconcileSCIMUserBatch(
 				{ field: "userId", value: userIds, operator: "in" },
 				{
 					field: "provisioningDomainId",
-					value: input.provisioningDomainId,
+					// Keep the bounded user list as the access path for keyed adapters.
+					value: [input.provisioningDomainId],
+					operator: "in",
 				},
 			],
 		},
@@ -505,11 +507,12 @@ async function reconcileSCIMUserBatch(
 		{
 			model: "scimProjectionGrant",
 			where: [
+				{ field: "userId", value: userIds, operator: "in" },
 				{
 					field: "provisioningDomainId",
-					value: input.provisioningDomainId,
+					value: [input.provisioningDomainId],
+					operator: "in",
 				},
-				{ field: "userId", value: userIds, operator: "in" },
 			],
 		},
 	);

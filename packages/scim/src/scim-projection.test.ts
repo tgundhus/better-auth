@@ -258,6 +258,27 @@ describe("SCIM role projection", () => {
 		});
 		const userLink = data.scimUser.find((row) => row.id === createdUser.id);
 		if (!userLink) throw new Error("Expected a SCIM User link");
+		// Bounded user-index reads must still exclude other provisioning domains
+		// for the same application user, including their existing role grants.
+		const outsideSource = {
+			...userLink,
+			id: "outside-source",
+			connectionId: "outside",
+			provisioningDomainId: "outside-domain",
+		};
+		data.scimUser.push(outsideSource);
+		const outsideGrant: ProjectionGrantRow = {
+			id: "outside-grant",
+			connectionId: "outside",
+			provisioningDomainId: "outside-domain",
+			scimUserId: outsideSource.id,
+			userId: userLink.userId,
+			sourceKind: "group",
+			sourceId: "outside-group",
+			role: "outside-role",
+			grantKey: "outside-key",
+		};
+		data.scimProjectionGrant.push(outsideGrant);
 		const createdGroup = await auth.api.createSCIMGroup({
 			body: {
 				schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"],
@@ -282,6 +303,7 @@ describe("SCIM role projection", () => {
 			grantKey: expect.any(String),
 		});
 		expect(projectionGrant?.grantKey).not.toBe("");
+		expect(data.scimProjectionGrant).toContainEqual(outsideGrant);
 		expect(reconciliations.at(-1)).toMatchObject({
 			provisioningDomainId: "workspace-acme",
 			userId: userLink.userId,
@@ -320,7 +342,7 @@ describe("SCIM role projection", () => {
 			reconciledUsers: 1,
 			batches: 1,
 		});
-		expect(data.scimProjectionGrant).toEqual([]);
+		expect(data.scimProjectionGrant).toEqual([outsideGrant]);
 		expect(reconciliations.at(-1)).toMatchObject({
 			provisioningDomainId: "workspace-acme",
 			userId: userLink.userId,
