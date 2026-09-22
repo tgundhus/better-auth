@@ -402,6 +402,10 @@ export interface SCIMCompatibilityOptions {
 
 /** Configuration for the SCIM plugin. */
 export interface SCIMOptions {
+	/** Group membership limits. Set maxMembers to null to allow large groups without a fixed member cap. */
+	groups?: { maxMembers?: number | null };
+	/** Enable RFC 7644 Bulk. Each operation commits independently. */
+	bulk?: { maxOperations?: number; maxPayloadSize?: number };
 	/**
 	 * Code-defined provisioning connections accepted by the SCIM endpoint.
 	 * May be empty when an application verifier or the managed connection

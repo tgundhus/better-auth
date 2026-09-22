@@ -290,7 +290,7 @@ PATCH accepts standard Enterprise paths such as `urn:ietf:params:scim:schemas:ex
 
 `displayName` is required and unique case-insensitively within the connection. `externalId` is optional and unique exactly as supplied.
 
-Each `members[].value` must contain a SCIM User ID from the same connection. Members may be direct Users only. When `type` is present, it must equal `User` case-insensitively. Duplicate references are collapsed, and a Group may contain up to 1,000 unique members.
+Each `members[].value` must contain a SCIM User ID from the same connection. Members may be direct Users only. When `type` is present, it must equal `User` case-insensitively. Duplicate references are collapsed, and the default maximum is 1,000 unique members. Set `groups.maxMembers: null` to accept larger groups without a fixed member cap. Existing groups are always read completely, including when a deployment lowers its write limit.
 
 ## Discovery
 
@@ -505,7 +505,7 @@ The plugin does not support the following SCIM features:
 * `User.groups`
 * Passwords, instant messaging addresses, photos, or X.509 certificates
 * Nested Groups or non-User Group members
-* Bulk requests, POST-based search, `/Me`, ETags, cursors, or sorting
+* POST-based search, `/Me`, ETags, cursors, or sorting
 * Operators other than equality and logical `and`
 * A built-in OAuth token endpoint, Basic authentication, or mutual TLS
 * HTTP management endpoints, SCIM request audit records, or webhooks

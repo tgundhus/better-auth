@@ -252,7 +252,10 @@ export function createSCIMConnectionMiddleware(options: SCIMOptions) {
 			return rejectAuthentication("Invalid SCIM bearer token");
 		}
 		const requiredScope = getRequiredSCIMScope(ctx.path, ctx.method);
-		if (!principal.scopes.includes(requiredScope)) {
+		if (
+			ctx.path !== "/scim/v2/Bulk" &&
+			!principal.scopes.includes(requiredScope)
+		) {
 			throw createSCIMError("FORBIDDEN", {
 				detail: `The SCIM bearer token is missing the ${requiredScope} scope`,
 			});

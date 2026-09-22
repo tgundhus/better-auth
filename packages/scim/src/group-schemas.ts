@@ -26,7 +26,7 @@ export const APIGroupSchema = z.object({
 		.length(1, "schemas must contain only the core SCIM Group schema"),
 	externalId: z.string().min(1).optional(),
 	displayName: z.string().trim().min(1),
-	members: z.array(groupMemberSchema).max(SCIM_MAX_GROUP_MEMBERS).optional(),
+	members: z.array(groupMemberSchema).optional(),
 });
 
 export type MicrosoftEntraGroupSchemaNormalization =
@@ -83,7 +83,6 @@ export const OpenAPIGroupResourceSchema = {
 		displayName: { type: "string" },
 		members: {
 			type: "array",
-			maxItems: SCIM_MAX_GROUP_MEMBERS,
 			items: {
 				type: "object",
 				properties: {

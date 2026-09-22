@@ -31,6 +31,7 @@ import type {
 	SCIMUser,
 } from "./persistence";
 import type { SCIMProjectionCoordinator } from "./projection";
+import { findAllSCIMRows } from "./read-all";
 import { projectSCIMResourceAttributes } from "./resource-attribute-projection";
 import {
 	createSCIMOrderKey,
@@ -230,11 +231,11 @@ async function assertConnectionUserAvailable(
 	const existing = await adapter.findOne<SCIMUser>({
 		model: "scimUser",
 		where: [
-			{ field: "connectionId", value: connectionId },
 			{
 				field: "connectionUserKey",
 				value: createConnectionUserKey(connectionId, userId),
 			},
+			{ field: "connectionId", value: connectionId },
 		],
 	});
 	if (existing) {
@@ -281,8 +282,8 @@ async function assertSCIMUserKeysAvailable(
 	const existingUserName = await adapter.findOne<SCIMUser>({
 		model: "scimUser",
 		where: [
-			{ field: "connectionId", value: input.connectionId },
 			{ field: "userNameKey", value: input.userNameKey },
+			{ field: "connectionId", value: input.connectionId },
 		],
 	});
 	if (existingUserName && existingUserName.id !== input.excludeSCIMUserId) {
@@ -296,8 +297,8 @@ async function assertSCIMUserKeysAvailable(
 	const existingExternalId = await adapter.findOne<SCIMUser>({
 		model: "scimUser",
 		where: [
-			{ field: "connectionId", value: input.connectionId },
 			{ field: "externalIdKey", value: input.externalIdKey },
+			{ field: "connectionId", value: input.connectionId },
 		],
 	});
 	if (existingExternalId && existingExternalId.id !== input.excludeSCIMUserId) {
@@ -1101,7 +1102,7 @@ export function deleteSCIMUser(
 					trx,
 					sourceBeforeLocks.userId,
 				);
-				const memberships = await trx.findMany<SCIMGroupMember>({
+				const memberships = await findAllSCIMRows<SCIMGroupMember>(trx, {
 					model: "scimGroupMember",
 					where: [
 						{
@@ -1137,7 +1138,7 @@ export function deleteSCIMUser(
 						detail: "The SCIM User identity changed concurrently",
 					});
 				}
-				const lockedMemberships = await trx.findMany<SCIMGroupMember>({
+				const lockedMemberships = await findAllSCIMRows<SCIMGroupMember>(trx, {
 					model: "scimGroupMember",
 					where: [
 						{

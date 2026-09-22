@@ -1,0 +1,56 @@
+---
+title: Bulk provisioning and large groups
+description: Process SCIM Bulk requests and groups above the default membership limit.
+---
+
+This continuation adds optional Bulk support to the Better Auth 1.7.5 SCIM plugin. It requires a database adapter that supplies real callback transactions, including rollback and reads of staged changes.
+
+```ts
+scim({
+  connections: [connection],
+  groups: { maxMembers: null },
+  bulk: {
+    maxOperations: 10_000,
+    maxPayloadSize: 16 * 1024 * 1024,
+  },
+});
+```
+
+`groups.maxMembers` defaults to 1,000 for compatibility. Set it to a positive integer to choose a larger limit, or `null` to remove the fixed cap. Large membership relations are paginated internally. Creation, replacement, PATCH, removal, role reconciliation, and deletion retain their transaction boundaries. Direct members must still be Users from the same connection.
+
+Projection reads complete membership, subject, source, Group, and grant relations without relying on the adapter's default page size. A user belonging to more than 100 Groups retains every applicable projected role.
+
+Supply `bulk: {}` to enable `POST /scim/v2/Bulk` with the limits shown above. `/ServiceProviderConfig` advertises these limits. The payload limit counts UTF-8 bytes of the incoming JSON, including whitespace. RFC 7644 requires advertised request limits; they do not impose a 100-item database transaction limit or a group size limit. Configure your HTTP runtime, request timeout, and resource rate limits for the workloads you accept. Each operation goes through the existing resource route, including authentication, application hooks, and rate limiting.
+
+```json
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],
+  "Operations": [
+    {
+      "method": "POST",
+      "path": "/Users",
+      "bulkId": "employee-1",
+      "data": {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "userName": "employee@example.com"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/Groups",
+      "bulkId": "engineering",
+      "data": {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+        "displayName": "Engineering",
+        "members": [{ "value": "bulkId:employee-1" }]
+      }
+    }
+  ]
+}
+```
+
+Bulk accepts POST, PUT, PATCH, and DELETE for Users and Groups. POST operations require a unique `bulkId`. References in resource paths, group membership values, enterprise manager attributes, and corresponding PATCH values can point to resources created elsewhere in the request. Forward dependencies are processed before the operations that use them. Ordinary text attributes are preserved.
+
+The response contains a status for every attempted operation, plus a location on success or a SCIM error on failure. Operations commit independently. A failed operation does not roll back earlier successful resources. A positive `failOnErrors` stops processing once that many errors occur; omitted or zero continues independent operations. Dependencies on failed, missing, or unresolvable circular references receive a conflict response. Conditional versions and nested Groups remain unsupported, consistent with the plugin's advertised capabilities.
+
+Do not replay a successful POST after an interrupted HTTP response without reconciling the resource through its external identifier. Bulk does not introduce durable HTTP idempotency or a background provisioning queue. Database commit recovery and delivery of the HTTP response are separate concerns.

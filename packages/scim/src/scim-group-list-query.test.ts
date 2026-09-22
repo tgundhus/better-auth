@@ -12,6 +12,7 @@ const headers = { authorization: "Bearer test-scim-token" };
 
 interface GroupListData extends MemoryDB {
 	user: User[];
+	scimUser: Record<string, unknown>[];
 	scimGroupMember: SCIMGroupMember[];
 }
 
@@ -116,7 +117,7 @@ describe("SCIM Group collection queries", () => {
 		expect(queries.countFindManyCalls("scimUser")).toBe(1);
 	});
 
-	it("rejects an over-limit Group in a batched collection response", async () => {
+	it("reads large persisted groups in a batched collection response", async () => {
 		const data = createData();
 		const queries = createQueryCountingAdapter(data);
 		const auth = betterAuth({
@@ -159,9 +160,16 @@ describe("SCIM Group collection queries", () => {
 			})),
 		);
 
-		await expect(auth.api.listSCIMGroups({ headers })).rejects.toMatchObject({
-			statusCode: 500,
-			body: expect.objectContaining({ status: "500" }),
-		});
+		data.scimUser.push(
+			...Array.from({ length: 1_001 }, (_, index) => ({
+				id: `user-${index}`,
+				connectionId: "workforce",
+				displayName: `User ${index}`,
+			})),
+		);
+		const page = await auth.api.listSCIMGroups({ headers });
+		expect(
+			page.Resources.find((group) => group.id === overLimitGroup.id)?.members,
+		).toHaveLength(1_001);
 	});
 });

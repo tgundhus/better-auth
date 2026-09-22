@@ -2,5 +2,5 @@
   "title": "SCIM",
   "icon": "pluginsSCIM",
   "pagesIndex": "index",
-  "pages": ["groups-and-roles", "reference", "..."]
+  "pages": ["groups-and-roles", "bulk", "reference", "..."]
 }
