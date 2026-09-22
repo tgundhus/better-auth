@@ -67,63 +67,70 @@ function readSCIMPathIdentifier(identifier: string): string {
 	}
 }
 
-export const getSCIMServiceProviderConfig = createAuthEndpoint(
-	"/scim/v2/ServiceProviderConfig",
-	{
-		method: "GET",
-		metadata: defineSCIMEndpointMetadata({
-			...HIDE_METADATA,
-			allowedMediaTypes: SCIM_REQUEST_MEDIA_TYPES,
-			openapi: {
-				summary: "Get SCIM service provider configuration",
-				description:
-					"Describes the SCIM protocol features supported by this service provider.",
-				responses: {
-					"200": {
-						description: "SCIM service provider configuration",
-						content: createSCIMOpenAPIContent(ServiceProviderOpenAPISchema),
-					},
-					...SCIMErrorOpenAPISchemas,
-				},
-			},
-		}),
-	},
-	async (ctx) => {
-		return ctx.json({
-			schemas: [SCIM_SERVICE_PROVIDER_CONFIG_SCHEMA],
-			patch: { supported: true },
-			bulk: {
-				supported: false,
-				maxOperations: 0,
-				maxPayloadSize: 0,
-			},
-			filter: {
-				supported: true,
-				maxResults: SCIM_MAX_PAGE_SIZE,
-			},
-			changePassword: { supported: false },
-			sort: { supported: false },
-			etag: { supported: false },
-			authenticationSchemes: [
-				{
-					name: "OAuth Bearer Token",
+export function createSCIMServiceProviderConfig(bulk?: {
+	maxOperations: number;
+	maxPayloadSize: number;
+}) {
+	return createAuthEndpoint(
+		"/scim/v2/ServiceProviderConfig",
+		{
+			method: "GET",
+			metadata: defineSCIMEndpointMetadata({
+				...HIDE_METADATA,
+				allowedMediaTypes: SCIM_REQUEST_MEDIA_TYPES,
+				openapi: {
+					summary: "Get SCIM service provider configuration",
 					description:
-						"Authentication using a bearer token in the Authorization header.",
-					specUri: "https://www.rfc-editor.org/info/rfc6750",
-					type: "oauthbearertoken",
-					primary: true,
+						"Describes the SCIM protocol features supported by this service provider.",
+					responses: {
+						"200": {
+							description: "SCIM service provider configuration",
+							content: createSCIMOpenAPIContent(ServiceProviderOpenAPISchema),
+						},
+						...SCIMErrorOpenAPISchemas,
+					},
 				},
-			],
-			meta: {
-				resourceType: "ServiceProviderConfig",
-				location: getResourceURL(
-					"/scim/v2/ServiceProviderConfig",
-					ctx.context.baseURL,
-				),
-			},
-		});
-	},
-);
+			}),
+		},
+		async (ctx) => {
+			return ctx.json({
+				schemas: [SCIM_SERVICE_PROVIDER_CONFIG_SCHEMA],
+				patch: { supported: true },
+				bulk: {
+					supported: bulk !== undefined,
+					maxOperations: bulk?.maxOperations ?? 0,
+					maxPayloadSize: bulk?.maxPayloadSize ?? 0,
+				},
+				filter: {
+					supported: true,
+					maxResults: SCIM_MAX_PAGE_SIZE,
+				},
+				changePassword: { supported: false },
+				sort: { supported: false },
+				etag: { supported: false },
+				authenticationSchemes: [
+					{
+						name: "OAuth Bearer Token",
+						description:
+							"Authentication using a bearer token in the Authorization header.",
+						specUri: "https://www.rfc-editor.org/info/rfc6750",
+						type: "oauthbearertoken",
+						primary: true,
+					},
+				],
+				meta: {
+					resourceType: "ServiceProviderConfig",
+					location: getResourceURL(
+						"/scim/v2/ServiceProviderConfig",
+						ctx.context.baseURL,
+					),
+				},
+			});
+		},
+	);
+}
+
+export const getSCIMServiceProviderConfig = createSCIMServiceProviderConfig();
 
 export const getSCIMSchemas = createAuthEndpoint(
 	"/scim/v2/Schemas",

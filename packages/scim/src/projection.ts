@@ -21,8 +21,10 @@ import type {
 	SCIMSubject,
 	SCIMUser,
 } from "./persistence";
+import { findAllSCIMRows } from "./read-all";
 import { createScopedKey } from "./resource-key";
 import { runSCIMApplicationCallback } from "./scim-error";
+import { mapTransactionWork } from "./transaction-batch";
 
 export type SCIMProjectionCoordinator = ReturnType<
 	typeof createSCIMProjectionCoordinator
@@ -81,17 +83,23 @@ async function acquireProjectionSubjectLocks(
 		offset < scimUserIds.length;
 		offset += SCIM_PROJECTION_BATCH_SIZE
 	) {
-		const scimUsers = await database.findMany<Pick<SCIMUser, "userId">>({
-			model: "scimUser",
-			where: [
-				{
-					field: "id",
-					value: scimUserIds.slice(offset, offset + SCIM_PROJECTION_BATCH_SIZE),
-					operator: "in",
-				},
-				{ field: "provisioningDomainId", value: provisioningDomainId },
-			],
-		});
+		const scimUsers = await findAllSCIMRows<Pick<SCIMUser, "userId">>(
+			database,
+			{
+				model: "scimUser",
+				where: [
+					{
+						field: "id",
+						value: scimUserIds.slice(
+							offset,
+							offset + SCIM_PROJECTION_BATCH_SIZE,
+						),
+						operator: "in",
+					},
+					{ field: "provisioningDomainId", value: provisioningDomainId },
+				],
+			},
+		);
 		for (const scimUser of scimUsers) affectedUserIds.add(scimUser.userId);
 	}
 	const userIds = [...affectedUserIds].sort();
@@ -103,7 +111,7 @@ async function acquireProjectionSubjectLocks(
 		offset < userIds.length;
 		offset += SCIM_PROJECTION_BATCH_SIZE
 	) {
-		const subjects = await database.findMany<SCIMSubject>({
+		const subjects = await findAllSCIMRows<SCIMSubject>(database, {
 			model: "scimSubject",
 			where: [
 				{
@@ -124,7 +132,7 @@ async function acquireProjectionSubjectLocks(
 	}
 
 	const updatedAt = new Date();
-	for (const userId of userIds) {
+	await mapTransactionWork(database, userIds, async (userId) => {
 		const subject = subjectByUserId.get(userId);
 		if (!subject) {
 			throw new BetterAuthError(
@@ -141,7 +149,7 @@ async function acquireProjectionSubjectLocks(
 			set: { updatedAt },
 		});
 		if (!acquired) concurrentProjectionSubjectMutation();
-	}
+	});
 }
 
 function createProjectionGrantKey(input: {
@@ -180,7 +188,7 @@ async function buildDesiredGrants(
 	);
 	const memberships =
 		input.memberships ??
-		(await database.findMany<SCIMGroupMember>({
+		(await findAllSCIMRows<SCIMGroupMember>(database, {
 			model: "scimGroupMember",
 			where: [
 				{
@@ -196,7 +204,7 @@ async function buildDesiredGrants(
 		input.groupById ??
 		new Map(
 			(
-				await database.findMany<SCIMGroup>({
+				await findAllSCIMRows<SCIMGroup>(database, {
 					model: "scimGroup",
 					where: [
 						{
@@ -325,14 +333,14 @@ async function reconcileProjectionUserState(
 	});
 	const existingGrants =
 		input.existingGrants ??
-		(await database.findMany<SCIMProjectionGrant>({
+		(await findAllSCIMRows<SCIMProjectionGrant>(database, {
 			model: "scimProjectionGrant",
 			where: [
+				{ field: "userId", value: input.userId },
 				{
 					field: "provisioningDomainId",
 					value: input.provisioningDomainId,
 				},
-				{ field: "userId", value: input.userId },
 			],
 		}));
 	const desiredGrantByKey = new Map(
@@ -348,11 +356,11 @@ async function reconcileProjectionUserState(
 		await database.deleteMany({
 			model: "scimProjectionGrant",
 			where: [
+				{ field: "userId", value: input.userId },
 				{
 					field: "provisioningDomainId",
 					value: input.provisioningDomainId,
 				},
-				{ field: "userId", value: input.userId },
 				{
 					field: "grantKey",
 					value: removedGrantKeys,
@@ -419,7 +427,7 @@ async function reconcileSCIMUserBatch(
 	},
 ): Promise<void> {
 	if (input.scimUserIds.length === 0) return;
-	const requestedSCIMUsers = await input.database.findMany<SCIMUser>({
+	const requestedSCIMUsers = await findAllSCIMRows<SCIMUser>(input.database, {
 		model: "scimUser",
 		where: [
 			{ field: "id", value: [...input.scimUserIds], operator: "in" },
@@ -442,16 +450,21 @@ async function reconcileSCIMUserBatch(
 	}
 	if (userIds.length === 0) return;
 
-	const provisioningDomainSCIMUsers = await input.database.findMany<SCIMUser>({
-		model: "scimUser",
-		where: [
-			{ field: "userId", value: userIds, operator: "in" },
-			{
-				field: "provisioningDomainId",
-				value: input.provisioningDomainId,
-			},
-		],
-	});
+	const provisioningDomainSCIMUsers = await findAllSCIMRows<SCIMUser>(
+		input.database,
+		{
+			model: "scimUser",
+			where: [
+				{ field: "userId", value: userIds, operator: "in" },
+				{
+					field: "provisioningDomainId",
+					// Keep the bounded user list as the access path for keyed adapters.
+					value: [input.provisioningDomainId],
+					operator: "in",
+				},
+			],
+		},
+	);
 	const connectionIds = [
 		...new Set(
 			provisioningDomainSCIMUsers.map((scimUser) => scimUser.connectionId),
@@ -469,7 +482,7 @@ async function reconcileSCIMUserBatch(
 		.map((scimUser) => scimUser.id);
 	const memberships =
 		options.projection?.roles && activeSCIMUserIds.length > 0
-			? await input.database.findMany<SCIMGroupMember>({
+			? await findAllSCIMRows<SCIMGroupMember>(input.database, {
 					model: "scimGroupMember",
 					where: [
 						{
@@ -486,20 +499,24 @@ async function reconcileSCIMUserBatch(
 	const groups =
 		groupIds.length === 0
 			? []
-			: await input.database.findMany<SCIMGroup>({
+			: await findAllSCIMRows<SCIMGroup>(input.database, {
 					model: "scimGroup",
 					where: [{ field: "id", value: groupIds, operator: "in" }],
 				});
-	const existingGrants = await input.database.findMany<SCIMProjectionGrant>({
-		model: "scimProjectionGrant",
-		where: [
-			{
-				field: "provisioningDomainId",
-				value: input.provisioningDomainId,
-			},
-			{ field: "userId", value: userIds, operator: "in" },
-		],
-	});
+	const existingGrants = await findAllSCIMRows<SCIMProjectionGrant>(
+		input.database,
+		{
+			model: "scimProjectionGrant",
+			where: [
+				{ field: "userId", value: userIds, operator: "in" },
+				{
+					field: "provisioningDomainId",
+					value: [input.provisioningDomainId],
+					operator: "in",
+				},
+			],
+		},
+	);
 
 	const scimUsersByUserId = new Map<string, SCIMUser[]>();
 	for (const scimUser of provisioningDomainSCIMUsers) {
@@ -522,7 +539,7 @@ async function reconcileSCIMUserBatch(
 	}
 	const groupById = new Map(groups.map((group) => [group.id, group]));
 
-	for (const userId of userIds) {
+	await mapTransactionWork(input.database, userIds, async (userId) => {
 		const userSCIMUsers = scimUsersByUserId.get(userId) ?? [];
 		const userSources = userSCIMUsers.filter(
 			(scimUser) => !decommissionedConnectionIds.has(scimUser.connectionId),
@@ -538,7 +555,7 @@ async function reconcileSCIMUserBatch(
 			groupById,
 			existingGrants: existingGrantsByUserId.get(userId) ?? [],
 		});
-	}
+	});
 }
 
 /** Creates the transaction-bound projection orchestrator for one plugin. */
@@ -580,7 +597,7 @@ export function createSCIMProjectionCoordinator(options: SCIMOptions) {
 
 			const provisioningDomainId = subject.provisioningDomainId;
 			if (!provisioningDomainId) return;
-			const scimUsers = await input.database.findMany<SCIMUser>({
+			const scimUsers = await findAllSCIMRows<SCIMUser>(input.database, {
 				model: "scimUser",
 				where: [
 					{ field: "userId", value: subject.userId },
@@ -713,7 +730,7 @@ export async function reconcileSCIMProjectionDomainBatch(input: {
 	});
 	if (!input.identity) return;
 
-	const subjects = await input.database.findMany<SCIMSubject>({
+	const subjects = await findAllSCIMRows<SCIMSubject>(input.database, {
 		model: "scimSubject",
 		where: [
 			{

@@ -142,7 +142,7 @@ function createCardinalityRaceAdapter(
 	};
 }
 
-function createFixture() {
+function createFixture(maxMembers?: number | null) {
 	const data = {
 		user: [] as User[],
 		session: [] as { id: string }[],
@@ -161,6 +161,7 @@ function createFixture() {
 		database: memoryAdapter(data),
 		plugins: [
 			scim({
+				groups: { maxMembers },
 				connections: [
 					{
 						id: "workforce",
@@ -201,6 +202,53 @@ function expectCardinalityError(error: unknown, expectSCIMType = true) {
 }
 
 describe("SCIM Group direct-member cardinality", () => {
+	it("creates, reads, replaces and deletes a group above 1,000 members when configured", async () => {
+		const { auth, data, headers } = createFixture(null);
+		const members = createMemberReferences(1_205);
+		data.scimUser.push(
+			...members.map(({ value }) => ({
+				id: value,
+				connectionId: "workforce",
+				displayName: value,
+			})),
+		);
+		const group = await auth.api.createSCIMGroup({
+			headers,
+			body: { schemas: [GROUP_SCHEMA], displayName: "Large group", members },
+		});
+		expect(data.scimGroupMember).toHaveLength(members.length);
+		const read = await auth.api.getSCIMGroup({
+			headers,
+			params: { groupId: group.id },
+		});
+		expect(read.members).toHaveLength(members.length);
+		const listed = await auth.api.listSCIMGroups({ headers });
+		expect(listed.Resources[0]?.members).toHaveLength(members.length);
+		await auth.api.replaceSCIMGroup({
+			headers,
+			params: { groupId: group.id },
+			body: {
+				schemas: [GROUP_SCHEMA],
+				displayName: "Replaced",
+				members: members.slice(100),
+			},
+		});
+		expect(data.scimGroupMember).toHaveLength(1_105);
+		await auth.api.patchSCIMGroup({
+			headers,
+			params: { groupId: group.id },
+			body: {
+				schemas: [PATCH_SCHEMA],
+				Operations: [
+					{ op: "add", path: "members", value: members.slice(0, 100) },
+				],
+			},
+		});
+		expect(data.scimGroupMember).toHaveLength(members.length);
+		await auth.api.deleteSCIMGroup({ headers, params: { groupId: group.id } });
+		expect(data.scimGroupMember).toHaveLength(0);
+	});
+
 	it("rejects an over-limit Group create without writing the Group", async () => {
 		const { auth, data, headers } = createFixture();
 
@@ -315,7 +363,7 @@ describe("SCIM Group direct-member cardinality", () => {
 		).toEqual(groupUpdatedAt);
 	});
 
-	it("bounds a Group response when persisted state violates the invariant", async () => {
+	it("reads existing large groups completely even when the configured write cap is lower", async () => {
 		const { auth, data, headers } = createFixture();
 		const group = await auth.api.createSCIMGroup({
 			body: {
@@ -347,15 +395,11 @@ describe("SCIM Group direct-member cardinality", () => {
 			})),
 		);
 
-		await expect(
-			auth.api.getSCIMGroup({
-				params: { groupId: group.id },
-				headers,
-			}),
-		).rejects.toMatchObject({
-			statusCode: 500,
-			body: expect.objectContaining({ status: "500" }),
+		const resource = await auth.api.getSCIMGroup({
+			params: { groupId: group.id },
+			headers,
 		});
+		expect(resource.members).toHaveLength(persistedMembers.length);
 	});
 
 	it("serializes concurrent additions before enforcing the member limit", async () => {

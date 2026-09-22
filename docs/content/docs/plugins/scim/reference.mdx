@@ -290,7 +290,7 @@ PATCH accepts standard Enterprise paths such as `urn:ietf:params:scim:schemas:ex
 
 `displayName` is required and unique case-insensitively within the connection. `externalId` is optional and unique exactly as supplied.
 
-Each `members[].value` must contain a SCIM User ID from the same connection. Members may be direct Users only. When `type` is present, it must equal `User` case-insensitively. Duplicate references are collapsed, and a Group may contain up to 1,000 unique members.
+Each `members[].value` must contain a SCIM User ID from the same connection. Members may be direct Users only. When `type` is present, it must equal `User` case-insensitively. Duplicate references are collapsed, and the default maximum is 1,000 unique members. Set `groups.maxMembers: null` to accept larger groups without a fixed member cap. Existing groups are always read completely, including when a deployment lowers its write limit.
 
 ## Discovery
 
@@ -444,6 +444,8 @@ type reconcileUser = (
 
 Use this callback to store the global enabled or disabled state. The callback runs inside the SCIM transaction.
 
+The source list and decommissioned-connection lookups are fully paginated. They do not depend on the adapter's default page size, including when a user has sources from many connections. Profile ownership and session revocation use this complete source state.
+
 ## Projection callbacks
 
 ### `projection.roles.map`
@@ -463,6 +465,8 @@ Each grant has a validated `role` and the canonical authorization `source` that 
 See [Groups and custom roles](/docs/plugins/scim/groups-and-roles) for a complete example.
 
 ## Trusted server APIs
+
+When `bulk.jobs: true` is configured, this fork also provides durable job submission, authenticated status polling, and trusted queue, processing, and cleanup APIs. See [Durable SCIM Bulk jobs](/docs/plugins/scim/bulk-jobs) for the opt-in protocol, Lambda worker, idempotency, and retention contract. Standard SCIM requests retain their synchronous behavior.
 
 These methods have no HTTP route and do not appear in OpenAPI output. Call them from trusted server code.
 
@@ -505,7 +509,7 @@ The plugin does not support the following SCIM features:
 * `User.groups`
 * Passwords, instant messaging addresses, photos, or X.509 certificates
 * Nested Groups or non-User Group members
-* Bulk requests, POST-based search, `/Me`, ETags, cursors, or sorting
+* POST-based search, `/Me`, ETags, cursors, or sorting
 * Operators other than equality and logical `and`
 * A built-in OAuth token endpoint, Basic authentication, or mutual TLS
 * HTTP management endpoints, SCIM request audit records, or webhooks

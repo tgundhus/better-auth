@@ -3,6 +3,9 @@ import { BetterAuthError } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
 import { statusCodes } from "better-call";
 import { normalizeSCIMUserEntraCompatibilityRequestBody } from "./active-normalization";
+import { createSCIMBulkEndpoint, resolveSCIMBulkOptions } from "./bulk";
+import { scimBulkJobSchema } from "./bulk-job-storage";
+import { createSCIMBulkJobEndpoints } from "./bulk-jobs";
 import type { SCIMOptions } from "./configuration";
 import {
 	areValidSCIMScopes,
@@ -12,11 +15,11 @@ import {
 } from "./connection-authentication";
 import { createDecommissionSCIMConnectionEndpoint } from "./connection-decommission";
 import {
+	createSCIMServiceProviderConfig,
 	getSCIMResourceType,
 	getSCIMResourceTypes,
 	getSCIMSchema,
 	getSCIMSchemas,
-	getSCIMServiceProviderConfig,
 } from "./discovery";
 import {
 	createSCIMGroup,
@@ -41,6 +44,7 @@ import {
 	createReconcileSCIMProjectionEndpoint,
 	createSCIMProjectionCoordinator,
 } from "./projection";
+import { readSCIMRequestBody } from "./request-body";
 import { createSCIMError } from "./scim-error";
 import { SCIM_MEDIA_TYPE } from "./scim-metadata";
 import { assertNativeSCIMTransactions } from "./transaction";
@@ -90,7 +94,7 @@ function isAPIErrorLike(value: unknown): value is APIErrorLike {
 	);
 }
 function createSCIMErrorResponse(
-	status: "BAD_REQUEST" | "UNSUPPORTED_MEDIA_TYPE",
+	status: "BAD_REQUEST" | "UNSUPPORTED_MEDIA_TYPE" | 413,
 	detail: string,
 	scimType?: "invalidSyntax" | "invalidValue",
 ) {
@@ -242,6 +246,9 @@ function validateConnections(options: SCIMOptions): void {
  * provisioned identity as an authentication account.
  */
 function createSCIMPlugin(options: SCIMOptions) {
+	const bulkLimits = options.bulk
+		? resolveSCIMBulkOptions(options.bulk)
+		: undefined;
 	const connectionMiddleware = createSCIMConnectionMiddleware(options);
 	const identity = createSCIMIdentityCoordinator(options);
 	const projection = createSCIMProjectionCoordinator(options);
@@ -288,7 +295,20 @@ function createSCIMPlugin(options: SCIMOptions) {
 			}
 			let body: unknown;
 			try {
-				body = JSON.parse(await request.clone().text());
+				const payload = await readSCIMRequestBody(
+					request,
+					path.endsWith("/scim/v2/Bulk")
+						? bulkLimits?.maxPayloadSize
+						: undefined,
+				);
+				if ("tooLarge" in payload)
+					return {
+						response: createSCIMErrorResponse(
+							413,
+							"Bulk request exceeds the advertised payload limit",
+						),
+					};
+				body = JSON.parse(payload.text);
 			} catch {
 				return {
 					response: createSCIMErrorResponse(
@@ -348,6 +368,11 @@ function createSCIMPlugin(options: SCIMOptions) {
 			};
 		},
 		endpoints: {
+			...createSCIMBulkJobEndpoints(
+				connectionMiddleware,
+				options.bulk?.jobs === true,
+			),
+			bulkSCIM: createSCIMBulkEndpoint(connectionMiddleware, options.bulk),
 			...managedConnectionEndpoints,
 			decommissionSCIMConnection: createDecommissionSCIMConnectionEndpoint(
 				projection,
@@ -357,12 +382,24 @@ function createSCIMPlugin(options: SCIMOptions) {
 				options,
 				projection,
 			),
-			createSCIMGroup: createSCIMGroup(connectionMiddleware, projection),
+			createSCIMGroup: createSCIMGroup(
+				connectionMiddleware,
+				projection,
+				options.groups?.maxMembers,
+			),
 			deleteSCIMGroup: deleteSCIMGroup(connectionMiddleware, projection),
 			getSCIMGroup: getSCIMGroup(connectionMiddleware),
 			listSCIMGroups: listSCIMGroups(connectionMiddleware),
-			patchSCIMGroup: patchSCIMGroup(connectionMiddleware, projection),
-			replaceSCIMGroup: replaceSCIMGroup(connectionMiddleware, projection),
+			patchSCIMGroup: patchSCIMGroup(
+				connectionMiddleware,
+				projection,
+				options.groups?.maxMembers,
+			),
+			replaceSCIMGroup: replaceSCIMGroup(
+				connectionMiddleware,
+				projection,
+				options.groups?.maxMembers,
+			),
 			createSCIMUser: createSCIMUser(
 				connectionMiddleware,
 				identity,
@@ -381,7 +418,7 @@ function createSCIMPlugin(options: SCIMOptions) {
 				identity,
 				projection,
 			),
-			getSCIMServiceProviderConfig,
+			getSCIMServiceProviderConfig: createSCIMServiceProviderConfig(bulkLimits),
 			getSCIMSchemas,
 			getSCIMSchema,
 			getSCIMResourceTypes,
@@ -428,6 +465,7 @@ function createSCIMPlugin(options: SCIMOptions) {
 			],
 		},
 		schema: {
+			...(options.bulk?.jobs ? scimBulkJobSchema : {}),
 			...(options.managedConnections ? managedSCIMSchema : {}),
 			scimConnectionBinding: {
 				fields: {
@@ -847,9 +885,21 @@ export type SCIMEndpoints = SCIMPlugin["endpoints"];
  */
 export function scim(options: SCIMOptions): SCIMPlugin {
 	validateConnections(options);
+	const maximum = options.groups?.maxMembers;
+	if (
+		maximum !== undefined &&
+		maximum !== null &&
+		(!Number.isSafeInteger(maximum) || maximum < 1)
+	) {
+		throw new BetterAuthError(
+			"groups.maxMembers must be a positive safe integer or null",
+		);
+	}
 	return createSCIMPlugin(options);
 }
 
+export type { SCIMBulkWorkerAPI } from "./bulk-job-runner";
+export { runSCIMBulkWorker } from "./bulk-job-runner";
 export type {
 	SCIMAuthenticationOptions,
 	SCIMAuthorizationSource,
