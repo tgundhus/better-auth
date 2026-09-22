@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runSCIMBulkWorker, scim } from ".";
 import type { SCIMBulkJob } from "./bulk-job-storage";
 import { processBulkJob } from "./bulk-job-worker";
-import type { SCIMPrincipal } from "./configuration";
+import type { SCIMOptions, SCIMPrincipal } from "./configuration";
 import {
 	runGroupMutationTransaction,
 	throwConcurrentSCIMGroupMutation,
@@ -46,6 +46,7 @@ const user = (id: string) => ({
 async function fixture(
 	onTestFinished: (fn: () => void) => void,
 	databaseHooks?: BetterAuthOptions["databaseHooks"],
+	projection?: SCIMOptions["projection"],
 ) {
 	const sqlite = new DatabaseSync(":memory:");
 	onTestFinished(() => sqlite.close());
@@ -61,6 +62,7 @@ async function fixture(
 			},
 			plugins: [
 				scim({
+					projection,
 					bulk: { jobs: true },
 					groups: { maxMembers: null },
 					connections: [
@@ -132,6 +134,66 @@ async function fixture(
 }
 
 describe("durable SCIM Bulk jobs", () => {
+	/** @see https://www.better-auth.com/docs/concepts/database#transactions */
+	it("retries failed nested group creation without confusing staged rows with committed uniqueness conflicts", async ({
+		onTestFinished,
+	}) => {
+		const f = await fixture(onTestFinished, undefined, {
+			roles: { map: () => ["member"], exists: () => true },
+			reconcileUser: () => {},
+		});
+		const job = await f.enqueue([
+			user("nested-retry"),
+			{
+				method: "POST",
+				path: "/Groups",
+				bulkId: "group",
+				data: {
+					schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+					displayName: "Retry group",
+					members: [{ value: "bulkId:nested-retry" }],
+				},
+			},
+		]);
+		await f.process(job.id, 1);
+		const transaction = f.context.adapter.transaction.bind(f.context.adapter);
+		const conflict = vi
+			.spyOn(f.context.adapter, "transaction")
+			.mockImplementation((callback) =>
+				transaction((database) =>
+					callback({
+						...database,
+						incrementOne: (async (args) =>
+							args.model === "scimSubject"
+								? null
+								: database.incrementOne(args)) as typeof database.incrementOne,
+					}),
+				),
+			);
+		expect(await f.process(job.id)).toMatchObject({
+			completedOperations: 1,
+			failedOperations: 0,
+			retryableStatus: 500,
+		});
+		conflict.mockRestore();
+		expect(await f.context.adapter.count({ model: "scimGroup" })).toBe(0);
+		expect(await f.context.adapter.count({ model: "scimGroupMember" })).toBe(0);
+		await f.context.adapter.update({
+			model: "scimBulkJob",
+			where: [{ field: "id", value: job.id }],
+			update: { leaseUntil: 0 },
+		});
+		expect(await f.process(job.id)).toMatchObject({
+			status: "complete",
+			completedOperations: 2,
+			failedOperations: 0,
+		});
+		expect(await f.context.adapter.count({ model: "scimUser" })).toBe(1);
+		expect(await f.context.adapter.count({ model: "scimGroup" })).toBe(1);
+		expect(
+			await f.context.adapter.count({ model: "scimProjectionGrant" }),
+		).toBe(1);
+	});
 	it("resumes the persisted queue cursor after a failed credential lookup without starving later jobs", async ({
 		onTestFinished,
 	}) => {

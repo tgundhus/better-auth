@@ -1,3 +1,4 @@
+import { getCurrentDBAdapterAsyncLocalStorage } from "@better-auth/core/context";
 import { isAPIError } from "better-auth/api";
 
 function isSCIMUniquenessError(error: unknown): boolean {
@@ -21,6 +22,14 @@ export async function runSCIMCreateWithUniquenessCheck<Result>(
 	createResource: () => Promise<Result>,
 	assertResourceAvailable: () => Promise<void>,
 ): Promise<Result> {
+	// A nested resource transaction has no independent rollback. Its owner must
+	// abort before a uniqueness probe can distinguish committed competitors from
+	// this failed attempt's own staged rows.
+	if (
+		(await getCurrentDBAdapterAsyncLocalStorage()).getStore()
+			?.isTransactionActive
+	)
+		return createResource();
 	try {
 		return await createResource();
 	} catch (createError) {
