@@ -335,11 +335,11 @@ async function reconcileProjectionUserState(
 		(await findAllSCIMRows<SCIMProjectionGrant>(database, {
 			model: "scimProjectionGrant",
 			where: [
+				{ field: "userId", value: input.userId },
 				{
 					field: "provisioningDomainId",
 					value: input.provisioningDomainId,
 				},
-				{ field: "userId", value: input.userId },
 			],
 		}));
 	const desiredGrantByKey = new Map(
@@ -355,11 +355,11 @@ async function reconcileProjectionUserState(
 		await database.deleteMany({
 			model: "scimProjectionGrant",
 			where: [
+				{ field: "userId", value: input.userId },
 				{
 					field: "provisioningDomainId",
 					value: input.provisioningDomainId,
 				},
-				{ field: "userId", value: input.userId },
 				{
 					field: "grantKey",
 					value: removedGrantKeys,
