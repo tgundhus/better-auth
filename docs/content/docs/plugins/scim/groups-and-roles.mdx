@@ -162,7 +162,7 @@ if (result.status === "reconciling") {
 
 The method is available only through the trusted server API. It reconciles affected users after retiring the connection. If the result is `reconciling`, call the method again at or after the `Date` in `retryAfter`. Continue until it returns `complete`, then remove the connection from configuration.
 
-Keep identity and projection callbacks idempotent because a failed operation may be retried. Decommissioning retains the connection's SCIM Users, Groups, and memberships.
+Keep identity and projection callbacks idempotent because a failed operation may be retried. A transaction adapter can advertise bounded batch work; when it does, projection callbacks for distinct users can run concurrently inside the same transaction. Do not coordinate different users through mutable process state, and keep every callback write on the supplied transaction. Decommissioning retains the connection's SCIM Users, Groups, and memberships.
 
 ## Related
 

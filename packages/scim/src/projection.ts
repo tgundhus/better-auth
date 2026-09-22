@@ -24,6 +24,7 @@ import type {
 import { findAllSCIMRows } from "./read-all";
 import { createScopedKey } from "./resource-key";
 import { runSCIMApplicationCallback } from "./scim-error";
+import { mapTransactionWork } from "./transaction-batch";
 
 export type SCIMProjectionCoordinator = ReturnType<
 	typeof createSCIMProjectionCoordinator
@@ -131,7 +132,7 @@ async function acquireProjectionSubjectLocks(
 	}
 
 	const updatedAt = new Date();
-	for (const userId of userIds) {
+	await mapTransactionWork(database, userIds, async (userId) => {
 		const subject = subjectByUserId.get(userId);
 		if (!subject) {
 			throw new BetterAuthError(
@@ -148,7 +149,7 @@ async function acquireProjectionSubjectLocks(
 			set: { updatedAt },
 		});
 		if (!acquired) concurrentProjectionSubjectMutation();
-	}
+	});
 }
 
 function createProjectionGrantKey(input: {
@@ -538,7 +539,7 @@ async function reconcileSCIMUserBatch(
 	}
 	const groupById = new Map(groups.map((group) => [group.id, group]));
 
-	for (const userId of userIds) {
+	await mapTransactionWork(input.database, userIds, async (userId) => {
 		const userSCIMUsers = scimUsersByUserId.get(userId) ?? [];
 		const userSources = userSCIMUsers.filter(
 			(scimUser) => !decommissionedConnectionIds.has(scimUser.connectionId),
@@ -554,7 +555,7 @@ async function reconcileSCIMUserBatch(
 			groupById,
 			existingGrants: existingGrantsByUserId.get(userId) ?? [],
 		});
-	}
+	});
 }
 
 /** Creates the transaction-bound projection orchestrator for one plugin. */

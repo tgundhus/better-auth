@@ -40,6 +40,7 @@ import {
 	getResourceURL,
 	SCIM_REQUEST_MEDIA_TYPES,
 } from "./scim-metadata";
+import { createManyInTransaction } from "./transaction-batch";
 
 const {
 	inputSchema: APIGroupSchema,
@@ -489,7 +490,7 @@ async function assertConnectionOwnsUsers(
 
 type GroupMembershipAdapter = Pick<
 	DBAdapter,
-	"count" | "create" | "deleteMany" | "findMany"
+	"count" | "create" | "deleteMany" | "findMany" | "options"
 >;
 
 async function applyIncrementalGroupMembershipPatch(
@@ -562,14 +563,11 @@ async function applyIncrementalGroupMembershipPatch(
 		});
 	}
 
-	const addedMemberships: SCIMGroupMember[] = [];
-	for (const scimUserId of addedSCIMUserIds) {
-		const membership = await adapter.create<
-			Omit<SCIMGroupMember, "id">,
-			SCIMGroupMember
-		>({
+	const addedMemberships = await createManyInTransaction<SCIMGroupMember>(
+		adapter,
+		{
 			model: "scimGroupMember",
-			data: {
+			data: addedSCIMUserIds.map((scimUserId) => ({
 				connectionId: input.connectionId,
 				groupId: input.groupId,
 				scimUserId,
@@ -579,10 +577,9 @@ async function applyIncrementalGroupMembershipPatch(
 					scimUserId,
 				),
 				createdAt: input.createdAt,
-			},
-		});
-		addedMemberships.push(membership);
-	}
+			})),
+		},
+	);
 
 	return { addedMemberships, removedMemberships };
 }
@@ -633,15 +630,14 @@ async function replaceGroupMemberships(
 		});
 	}
 
-	const addedMemberships: SCIMGroupMember[] = [];
-	for (const scimUserId of input.scimUserIds) {
-		if (existingMemberIds.has(scimUserId)) continue;
-		const membership = await adapter.create<
-			Omit<SCIMGroupMember, "id">,
-			SCIMGroupMember
-		>({
+	const addedSCIMUserIds = input.scimUserIds.filter(
+		(scimUserId) => !existingMemberIds.has(scimUserId),
+	);
+	const addedMemberships = await createManyInTransaction<SCIMGroupMember>(
+		adapter,
+		{
 			model: "scimGroupMember",
-			data: {
+			data: addedSCIMUserIds.map((scimUserId) => ({
 				connectionId: input.connectionId,
 				groupId: input.groupId,
 				scimUserId,
@@ -651,10 +647,9 @@ async function replaceGroupMemberships(
 					scimUserId,
 				),
 				createdAt: input.createdAt,
-			},
-		});
-		addedMemberships.push(membership);
-	}
+			})),
+		},
+	);
 
 	return { addedMemberships, removedMemberships };
 }
