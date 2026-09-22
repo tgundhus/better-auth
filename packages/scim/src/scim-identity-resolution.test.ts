@@ -1,4 +1,5 @@
 import type {
+	AuthContext,
 	BetterAuthOptions,
 	SecondaryStorage,
 	Session,
@@ -14,6 +15,8 @@ import type {
 	SCIMUserExternalIdReference,
 } from ".";
 import { acquireActiveSCIMUserLink, scim } from ".";
+import { findDecommissionedSCIMConnectionIds } from "./connection-state";
+import { createSCIMIdentityCoordinator } from "./identity";
 import type {
 	SCIMConnectionBinding,
 	SCIMIdentityTombstone,
@@ -95,6 +98,7 @@ function createIdentityFixture(
 		secondaryStorage?: SecondaryStorage;
 		sessions?: readonly Session[];
 		users?: readonly User[];
+		defaultFindManyLimit?: number;
 	} = {},
 ) {
 	const data = {
@@ -111,6 +115,9 @@ function createIdentityFixture(
 	};
 	const auth = betterAuth({
 		baseURL: BASE_URL,
+		advanced: {
+			database: { defaultFindManyLimit: options.defaultFindManyLimit },
+		},
 		database: memoryAdapter(data),
 		...(options.databaseHooks ? { databaseHooks: options.databaseHooks } : {}),
 		...(options.secondaryStorage
@@ -155,6 +162,91 @@ function preserveExistingUser(userId: string): SCIMIdentity {
 }
 
 describe("SCIM explicit identity resolution", () => {
+	/** @see https://better-auth.com/docs/plugins/scim#identity-reconciliation */
+	it("reconciles every identity source across pages without clearing profile ownership or revoking an active session", async () => {
+		const user = createBackingUser();
+		const { auth, data } = createIdentityFixture({
+			users: [user],
+			sessions: [createSession(user.id)],
+			defaultFindManyLimit: 1,
+			identity: preserveExistingUser(user.id),
+		});
+		await auth.api.createSCIMUser({
+			body: {
+				schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
+				userName: "source@example.com",
+			},
+			headers: authorization("connection-a-token"),
+		});
+		const source = data.scimUser[0]!;
+		const binding = data.scimConnectionBinding[0]!;
+		source.active = false;
+		for (let index = 1; index <= 501; index++) {
+			const connectionId = `source-${String(index).padStart(4, "0")}`;
+			data.scimUser.push({
+				...source,
+				id: connectionId,
+				connectionId,
+				connectionUserKey: connectionId,
+				active: index === 501,
+			});
+			data.scimConnectionBinding.push({
+				...binding,
+				id: connectionId,
+				connectionId,
+				connectionKey: connectionId,
+			});
+		}
+		const subject = data.scimSubject[0]!;
+		subject.profileSourceId = "source-0501";
+		const context = (await auth.$context) as unknown as AuthContext;
+		const state = await createSCIMIdentityCoordinator({
+			connections: [CONNECTION_A],
+		}).reconcileUser({ database: context.adapter, auth: context, subject });
+		expect(state.sources).toHaveLength(502);
+		expect(state).toMatchObject({
+			active: true,
+			profileSourceId: "source-0501",
+		});
+		expect(data.session).toHaveLength(1);
+	});
+
+	/** @see https://better-auth.com/docs/plugins/scim#connection-decommissioning */
+	it("excludes every decommissioned connection across pages and bounded lookup batches", async () => {
+		const { auth, data } = createIdentityFixture({ defaultFindManyLimit: 1 });
+		await auth.api.createSCIMUser({
+			body: {
+				schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"],
+				userName: "bindings@example.com",
+			},
+			headers: authorization("connection-a-token"),
+		});
+		const binding = data.scimConnectionBinding[0]!;
+		const ids = Array.from(
+			{ length: 1_201 },
+			(_, index) => `retired-${String(index).padStart(4, "0")}`,
+		);
+		for (const id of ids)
+			data.scimConnectionBinding.push({
+				...binding,
+				id,
+				connectionId: id,
+				connectionKey: id,
+				decommissionStatus: "complete",
+			});
+		const { adapter } = await auth.$context;
+		expect(
+			await findDecommissionedSCIMConnectionIds(adapter, [
+				binding.connectionId,
+				...ids,
+				ids[0]!,
+			]),
+		).toEqual(new Set(ids));
+		expect(await findDecommissionedSCIMConnectionIds(adapter, [])).toEqual(
+			new Set(),
+		);
+	});
+
 	it("exposes the canonical User invariants to identity resolvers", () => {
 		type ResolveUser = NonNullable<SCIMIdentity["resolveUser"]>;
 		type CanonicalUser = Parameters<ResolveUser>[0]["resource"];

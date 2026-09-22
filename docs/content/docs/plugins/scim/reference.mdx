@@ -444,6 +444,8 @@ type reconcileUser = (
 
 Use this callback to store the global enabled or disabled state. The callback runs inside the SCIM transaction.
 
+The source list and decommissioned-connection lookups are fully paginated. They do not depend on the adapter's default page size, including when a user has sources from many connections. Profile ownership and session revocation use this complete source state.
+
 ## Projection callbacks
 
 ### `projection.roles.map`
@@ -463,6 +465,8 @@ Each grant has a validated `role` and the canonical authorization `source` that 
 See [Groups and custom roles](/docs/plugins/scim/groups-and-roles) for a complete example.
 
 ## Trusted server APIs
+
+When `bulk.jobs: true` is configured, this fork also provides durable job submission, authenticated status polling, and trusted queue, processing, and cleanup APIs. See [Durable SCIM Bulk jobs](/docs/plugins/scim/bulk-jobs) for the opt-in protocol, Lambda worker, idempotency, and retention contract. Standard SCIM requests retain their synchronous behavior.
 
 These methods have no HTTP route and do not appear in OpenAPI output. Call them from trusted server code.
 

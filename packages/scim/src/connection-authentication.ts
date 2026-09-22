@@ -235,7 +235,7 @@ export function createSCIMConnectionMiddleware(options: SCIMOptions) {
 				{
 					token: bearerToken,
 					method: ctx.method,
-					path: ctx.path,
+					path: ctx.path ?? "/scim/v2/Bulk",
 					headers: new Headers(ctx.headers),
 				},
 				{
@@ -251,9 +251,11 @@ export function createSCIMConnectionMiddleware(options: SCIMOptions) {
 		if (!principal) {
 			return rejectAuthentication("Invalid SCIM bearer token");
 		}
-		const requiredScope = getRequiredSCIMScope(ctx.path, ctx.method);
+		const path = ctx.path ?? "/scim/v2/Bulk";
+		const requiredScope = getRequiredSCIMScope(path, ctx.method);
 		if (
-			ctx.path !== "/scim/v2/Bulk" &&
+			path !== "/scim/v2/Bulk" &&
+			!path.startsWith("/scim/v2/BulkJobs/") &&
 			!principal.scopes.includes(requiredScope)
 		) {
 			throw createSCIMError("FORBIDDEN", {

@@ -1,0 +1,93 @@
+---
+title: Durable SCIM Bulk jobs
+description: Process opt-in provisioning jobs across worker invocations without changing standard SCIM responses.
+---
+
+This fork adds an optional asynchronous extension alongside standard SCIM Bulk. It is not part of RFC 7644 and requires explicit client support. Requests without `Prefer: respond-async` retain the standard synchronous Bulk response.
+
+## Enable jobs
+
+```ts
+scim({
+  connections,
+  groups: { maxMembers: null },
+  bulk: {
+    jobs: true,
+    maxOperations: 10_000,
+    maxPayloadSize: 4 * 1024 * 1024,
+  },
+});
+```
+
+Apply the generated schema before enabling this option. It adds `scimBulkJob`, `scimBulkBlob`, `scimBulkOutcome`, and `scimBulkWorker`. DynamoDB needs no secondary indexes beyond the adapter's existing format, but every service and worker must use the same transaction-capable adapter version and table. Do not mix this preview with 1.2 readers or writers.
+
+The example uses a 4 MiB ingress limit to leave room for the Lambda request envelope. Match this value to the deployed gateway and encoding. AWS limits still apply to each HTTP request and invocation; an asynchronous job does not increase an ingress payload limit.
+
+## Submit and poll
+
+Send a normal Bulk body to `POST /scim/v2/Bulk` with these additional headers:
+
+```http
+Prefer: respond-async
+Idempotency-Key: directory-sync-2026-09-22-001
+```
+
+The server persists the entire request before responding with `202 Accepted`, `Preference-Applied: respond-async`, and a `Location` pointing to `/scim/v2/BulkJobs/:jobId`. No bearer token or original request headers are persisted.
+
+Idempotency keys are scoped to the immutable connection. Reusing a key with the same parsed body returns the existing job. A different body returns 409. The key must contain 1 to 1,024 UTF-8 bytes. Retrying a submission after a lost response is safe with the same key and body.
+
+Poll the location with a currently valid bearer credential for the same connection and provisioning domain. Its scopes must include every scope originally granted to the job. A broader replacement credential cannot grant extra permissions to the saved operations. Connection decommissioning and credential revocation are enforced on each worker invocation and resource dispatch.
+
+```http
+GET /scim/v2/BulkJobs/:jobId?startIndex=0&count=25
+Authorization: Bearer <current credential>
+```
+
+The response includes `queued`, `running`, or `complete` status, operation counts, and `Operations`. Each result has its original zero-based `operationIndex`. This extension's `startIndex` is a zero-based **completion cursor**, so forward references that finish later cannot be skipped. Save `nextStartIndex` and keep polling from it. An empty page preserves the cursor. The maximum page size is 100. Poll until status is `complete` and every completed operation has been read. `failOnErrors` can complete a job without attempting every input operation.
+
+## Run on Lambda
+
+`runSCIMBulkWorker` discovers queued jobs using a persisted, revision-protected cursor. It advances the cursor before dispatch and revisits skipped or failed jobs on the next pass. Multiple workers use per-job leases and revision fencing. A killed invocation's lease expires after 15 minutes and 30 seconds. Schedule the worker regularly; accepting a job alone does not start background execution.
+
+```ts title="scim-worker.ts"
+import { runSCIMBulkWorker } from "@better-auth/scim";
+import { auth } from "./auth";
+import { currentSCIMBearerToken } from "./credentials";
+
+export async function handler(
+  _event: unknown,
+  context: { getRemainingTimeInMillis(): number },
+) {
+  const result = await runSCIMBulkWorker({
+    api: auth.api,
+    worker: "provisioning",
+    resolveBearerToken: ({ connectionId, credentialId }) =>
+      currentSCIMBearerToken(connectionId, credentialId),
+    maxCalls: 100,
+    maxOperationsPerJob: 25,
+    getRemainingTimeInMillis: () => context.getRemainingTimeInMillis(),
+    minRemainingTimeMs: 60_000,
+  });
+  console.log(JSON.stringify({ event: "scim-bulk-worker", ...result }));
+  if (result.failures.length) throw new Error("SCIM Bulk worker has retryable failures");
+  return result;
+}
+```
+
+`auth` is the application's configured Better Auth instance. `currentSCIMBearerToken` must resolve a current credential from the application's credential store; it is not a library function. Never put bearer tokens in EventBridge events or logs. Static connections can use their configured credential. Managed connections require a securely retained raw credential or an application verifier that can issue a current worker token. Revoked or expired credentials do not get bypassed by the worker.
+
+Deploy this as a scheduled, private Lambda, with a 900-second timeout, bounded AWS SDK request deadlines, sufficient memory for the largest accepted payload, a dead-letter queue, and alarms for errors, queue age, and repeated job failures. Run the adapter's transaction recovery worker independently. Check gateway limits, IAM permissions, throttling, concurrency, and failure recovery in your own staging account before production deployment.
+
+Each operation's database changes, outcome, and progress checkpoint commit in one transaction. A lost commit acknowledgement is resolved from persisted state on retry. A 429 or 5xx resource response rolls back and leaves the operation queued with a 30-second backoff. Other failures are recorded per operation and count toward `failOnErrors`. Callback exceptions that occur after commit are logged and do not replay committed database mutations. External callback side effects still require application-owned idempotency or a transactional outbox.
+
+The worker yields **between resource operations**. A single large Group mutation is still one interactive callback and must fit within the Lambda invocation. Its JavaScript stack cannot resume after a timeout. Set request deadlines with enough margin for transaction abort or recovery, and validate your largest Group with actual projection callbacks and deployed capacity. The library does not claim unlimited per-operation execution time.
+
+For direct orchestration, `auth.api.processSCIMBulkJob` accepts `{ jobId, maxOperations, timeBudgetMs }` and current bearer headers. `auth.api.nextSCIMBulkJob` advances a named durable queue cursor. `auth.api.listSCIMBulkJobs` supports inspection by `state`, `shard`, `afterId`, and `count`. These methods have no HTTP route.
+
+## Retention and cleanup
+
+Choose a retention period for provisioning payloads and results. Use `listSCIMBulkJobs` with `state: "complete"` and all returned cursors to find terminal jobs older than that period, then call the trusted `purgeSCIMBulkJob` API with `{ jobId, maxRows: 25 }` repeatedly until its status is `expired`. Also resume jobs listed under `state: "purging"` after worker interruption. Cleanup is bounded and restartable.
+
+Purging removes request and result chunks and operation markers. Polling then returns 410. A small terminal job record remains to preserve idempotency, so a replay cannot recreate deleted users or groups. Size retention for these metadata records separately. Deleting them ends the idempotency guarantee for their keys. Never apply TTL to active jobs, their payloads, their outcomes, or live adapter journals.
+
+Queue discovery deliberately continues past jobs with unavailable credentials or corrupted payloads. Investigate repeated failures using their job IDs, restore required data or credentials, and rerun the worker. Keep job payloads out of application logs and restrict trusted server APIs to internal code.

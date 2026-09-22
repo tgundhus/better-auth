@@ -405,7 +405,12 @@ export interface SCIMOptions {
 	/** Group membership limits. Set maxMembers to null to allow large groups without a fixed member cap. */
 	groups?: { maxMembers?: number | null };
 	/** Enable RFC 7644 Bulk. Each operation commits independently. */
-	bulk?: { maxOperations?: number; maxPayloadSize?: number };
+	bulk?: {
+		maxOperations?: number;
+		maxPayloadSize?: number;
+		/** Enable durable, opt-in asynchronous Bulk jobs and trusted worker APIs. */
+		jobs?: boolean;
+	};
 	/**
 	 * Code-defined provisioning connections accepted by the SCIM endpoint.
 	 * May be empty when an application verifier or the managed connection

@@ -1,5 +1,6 @@
 import {
 	getCurrentAdapter,
+	getCurrentDBAdapterAsyncLocalStorage,
 	runWithTransaction,
 } from "@better-auth/core/context";
 import type {
@@ -26,6 +27,7 @@ import type {
 	SCIMSubject,
 	SCIMUser,
 } from "./persistence";
+import { findAllSCIMRows } from "./read-all";
 import { createSCIMUserExternalIdKey } from "./resource-key";
 import { createSCIMError, runSCIMApplicationCallback } from "./scim-error";
 
@@ -209,6 +211,11 @@ export async function runIdentityMutationTransaction<Result>(
 	callback: (transaction: DBTransactionAdapter) => Promise<Result>,
 	options: IdentityMutationTransactionOptions = {},
 ): Promise<Result> {
+	if (
+		(await getCurrentDBAdapterAsyncLocalStorage()).getStore()
+			?.isTransactionActive
+	)
+		return callback(await getCurrentAdapter(adapter));
 	let subjectCreationObserved = options.subjectCreationUserId
 		? Boolean(
 				await adapter.findOne<SCIMSubject>({
@@ -465,7 +472,7 @@ export function createSCIMIdentityCoordinator(options: SCIMOptions) {
 			auth: AuthContext;
 			subject: SCIMSubject;
 		}): Promise<SCIMIdentityState> {
-			const scimUsers = await input.database.findMany<SCIMUser>({
+			const scimUsers = await findAllSCIMRows<SCIMUser>(input.database, {
 				model: "scimUser",
 				where: [{ field: "userId", value: input.subject.userId }],
 			});

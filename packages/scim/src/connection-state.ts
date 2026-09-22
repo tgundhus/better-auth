@@ -1,6 +1,7 @@
 import type { DBAdapter, DBTransactionAdapter } from "better-auth";
 import { BetterAuthError } from "better-auth";
 import type { SCIMConnectionBinding } from "./persistence";
+import { findAllSCIMRows } from "./read-all";
 import { createScopedKey } from "./resource-key";
 import { createSCIMError } from "./scim-error";
 
@@ -76,22 +77,25 @@ export async function findDecommissionedSCIMConnectionIds(
 	database: Pick<DBAdapter, "findMany">,
 	connectionIds: readonly string[],
 ): Promise<Set<string>> {
-	if (connectionIds.length === 0) return new Set();
-	const bindings = await database.findMany<SCIMConnectionBinding>({
-		model: "scimConnectionBinding",
-		where: [
-			{
-				field: "connectionId",
-				value: [...new Set(connectionIds)],
-				operator: "in",
-			},
-		],
-	});
-	return new Set(
-		bindings
-			.filter((binding) => binding.decommissionStatus !== "active")
-			.map((binding) => binding.connectionId),
-	);
+	const ids = [...new Set(connectionIds)];
+	const retired = new Set<string>();
+	for (let offset = 0; offset < ids.length; offset += 500) {
+		const bindings = await findAllSCIMRows<SCIMConnectionBinding>(database, {
+			model: "scimConnectionBinding",
+			where: [
+				{
+					field: "connectionId",
+					value: ids.slice(offset, offset + 500),
+					operator: "in",
+				},
+			],
+		});
+		for (const binding of bindings) {
+			if (binding.decommissionStatus !== "active")
+				retired.add(binding.connectionId);
+		}
+	}
+	return retired;
 }
 
 /**

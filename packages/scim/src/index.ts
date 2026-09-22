@@ -4,6 +4,8 @@ import { createAuthMiddleware } from "better-auth/api";
 import { statusCodes } from "better-call";
 import { normalizeSCIMUserEntraCompatibilityRequestBody } from "./active-normalization";
 import { createSCIMBulkEndpoint, resolveSCIMBulkOptions } from "./bulk";
+import { scimBulkJobSchema } from "./bulk-job-storage";
+import { createSCIMBulkJobEndpoints } from "./bulk-jobs";
 import type { SCIMOptions } from "./configuration";
 import {
 	areValidSCIMScopes,
@@ -366,6 +368,10 @@ function createSCIMPlugin(options: SCIMOptions) {
 			};
 		},
 		endpoints: {
+			...createSCIMBulkJobEndpoints(
+				connectionMiddleware,
+				options.bulk?.jobs === true,
+			),
 			bulkSCIM: createSCIMBulkEndpoint(connectionMiddleware, options.bulk),
 			...managedConnectionEndpoints,
 			decommissionSCIMConnection: createDecommissionSCIMConnectionEndpoint(
@@ -459,6 +465,7 @@ function createSCIMPlugin(options: SCIMOptions) {
 			],
 		},
 		schema: {
+			...(options.bulk?.jobs ? scimBulkJobSchema : {}),
 			...(options.managedConnections ? managedSCIMSchema : {}),
 			scimConnectionBinding: {
 				fields: {
@@ -891,6 +898,8 @@ export function scim(options: SCIMOptions): SCIMPlugin {
 	return createSCIMPlugin(options);
 }
 
+export type { SCIMBulkWorkerAPI } from "./bulk-job-runner";
+export { runSCIMBulkWorker } from "./bulk-job-runner";
 export type {
 	SCIMAuthenticationOptions,
 	SCIMAuthorizationSource,

@@ -1,6 +1,7 @@
 import { BetterAuthError, HIDE_METADATA } from "better-auth";
 import { createAuthEndpoint, router } from "better-auth/api";
 import * as z from "zod";
+import { enqueueBulkJob, jobDescriptor } from "./bulk-job-storage";
 import {
 	bulkDependencies,
 	replaceBulkData,
@@ -18,7 +19,7 @@ import {
 const REQUEST_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:BulkRequest";
 const RESPONSE_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:BulkResponse";
 const ERROR_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:Error";
-const bulkBodySchema = z.object({
+export const bulkBodySchema = z.object({
 	schemas: z.array(z.literal(REQUEST_SCHEMA)).length(1),
 	failOnErrors: z.number().int().nonnegative().optional(),
 	Operations: z
@@ -34,7 +35,12 @@ const bulkBodySchema = z.object({
 		.min(1),
 });
 
-type Operation = z.infer<typeof bulkBodySchema>["Operations"][number];
+export type SCIMBulkBody = z.infer<typeof bulkBodySchema>;
+export type Operation = SCIMBulkBody["Operations"][number];
+export interface SCIMBulkExecution {
+	result: SCIMBulkOperationResult;
+	id?: string;
+}
 export interface SCIMBulkOperationResult {
 	method: Operation["method"];
 	bulkId?: string;
@@ -58,7 +64,7 @@ export function resolveSCIMBulkOptions(options: SCIMOptions["bulk"]) {
 	return limits;
 }
 
-function errorResult(
+export function errorResult(
 	operation: Operation,
 	status: number,
 	detail: string,
@@ -88,7 +94,7 @@ function validateOperation(operation: Operation): string | undefined {
 	return undefined;
 }
 
-async function executeOperation(
+export async function executeOperation(
 	operation: Operation,
 	resolved: ReadonlyMap<string, string>,
 	input: {
@@ -122,6 +128,8 @@ async function executeOperation(
 	const location = getResourceURL(`/scim/v2${path}`, input.baseURL);
 	const headers = new Headers(input.headers);
 	headers.delete("content-length");
+	headers.delete("idempotency-key");
+	headers.delete("prefer");
 	headers.set("content-type", "application/scim+json");
 	const request = new Request(location, {
 		method: operation.method,
@@ -247,6 +255,34 @@ export function createSCIMBulkEndpoint(
 				throw createSCIMError(413, {
 					detail: "Bulk request exceeds the advertised limits",
 				});
+			if (
+				ctx.headers
+					?.get("prefer")
+					?.split(",")
+					.some((value) => value.trim().toLowerCase() === "respond-async")
+			) {
+				if (!options.jobs)
+					throw createSCIMError("NOT_IMPLEMENTED", {
+						detail: "Asynchronous SCIM Bulk is not enabled",
+					});
+				const job = await enqueueBulkJob(
+					ctx.context.adapter,
+					ctx.context.scimPrincipal,
+					ctx.body,
+					ctx.headers.get("idempotency-key"),
+				);
+				ctx.setHeader(
+					"location",
+					getResourceURL(
+						`/scim/v2/BulkJobs/${encodeURIComponent(job.id)}`,
+						ctx.context.baseURL,
+					),
+				);
+				ctx.setHeader("preference-applied", "respond-async");
+				ctx.setHeader("cache-control", "no-store");
+				ctx.setStatus(202);
+				return ctx.json(jobDescriptor(job), { status: 202 });
+			}
 			const dispatch = router({ ...ctx.context }, ctx.context.options).handler;
 			return ctx.json(
 				await processSCIMBulk(ctx.body, {

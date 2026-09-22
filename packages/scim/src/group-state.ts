@@ -1,5 +1,6 @@
 import {
 	getCurrentAdapter,
+	getCurrentDBAdapterAsyncLocalStorage,
 	runWithTransaction,
 } from "@better-auth/core/context";
 import type { DBAdapter, DBTransactionAdapter } from "better-auth";
@@ -37,6 +38,13 @@ export async function runGroupMutationTransaction<Result>(
 	adapter: DBAdapter,
 	callback: (transaction: DBTransactionAdapter) => Promise<Result>,
 ): Promise<Result> {
+	// Nested transactions join their parent without a savepoint. Only the owner
+	// may retry after rolling back the entire attempt.
+	if (
+		(await getCurrentDBAdapterAsyncLocalStorage()).getStore()
+			?.isTransactionActive
+	)
+		return callback(await getCurrentAdapter(adapter));
 	for (let attempt = 1; attempt <= SCIM_GROUP_TRANSACTION_ATTEMPTS; attempt++) {
 		try {
 			return await runWithTransaction(adapter, async () =>
